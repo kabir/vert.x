@@ -122,6 +122,7 @@ public class SSLHelper {
     new ConcurrentHashMap<>(), new ConcurrentHashMap<>()
   };
   private boolean openSslSessionCacheEnabled = true;
+  private volatile SSLContext suppliedSslContext;
 
   private SSLHelper(TCPSSLOptions options, KeyCertOptions keyCertOptions, TrustOptions trustOptions) {
     SSLEngineOptions sslEngineOptions = resolveEngineOptions(options);
@@ -183,6 +184,7 @@ public class SSLHelper {
     this.enabledProtocols = that.enabledProtocols;
     this.endpointIdentificationAlgorithm = that.endpointIdentificationAlgorithm;
     this.openSslSessionCacheEnabled = that.openSslSessionCacheEnabled;
+    this.suppliedSslContext = that.suppliedSslContext;
   }
 
   public boolean isUseAlpn() {
@@ -221,6 +223,19 @@ public class SSLHelper {
   public SSLHelper setApplicationProtocols(List<String> applicationProtocols) {
     this.applicationProtocols = applicationProtocols;
     return this;
+  }
+
+  /**
+   * Must be called before createEngine()
+   * @deprecated Internal use only
+   */
+  @Deprecated
+  public void setSuppliedSslContext(SSLContext suppliedSslContext) {
+    if (this.suppliedSslContext != null) {
+      throw new IllegalArgumentException("suppliedSslContext already set");
+    }
+    Objects.requireNonNull(suppliedSslContext, "suppliedSslContext should not be null");
+    this.suppliedSslContext = suppliedSslContext;
   }
 
   /*
@@ -502,15 +517,30 @@ public class SSLHelper {
   }
 
   public SSLEngine createEngine(VertxInternal vertx, SocketAddress socketAddress, String serverName, boolean useAlpn) {
-    SslContext context = getContext(vertx, null, useAlpn);
-    SSLEngine engine;
-    if (socketAddress.isDomainSocket()) {
-      engine = context.newEngine(ByteBufAllocator.DEFAULT);
+    if (suppliedSslContext == null) {
+      SslContext context = getContext(vertx, null, useAlpn);
+      SSLEngine engine;
+      if (socketAddress.isDomainSocket()) {
+        engine = context.newEngine(ByteBufAllocator.DEFAULT);
+      } else {
+        engine = context.newEngine(ByteBufAllocator.DEFAULT, socketAddress.host(), socketAddress.port());
+      }
+      configureEngine(engine, serverName);
+      return engine;
     } else {
-      engine = context.newEngine(ByteBufAllocator.DEFAULT, socketAddress.host(), socketAddress.port());
+      SSLEngine engine;
+      if (socketAddress.isDomainSocket()) {
+        engine = suppliedSslContext.createSSLEngine();
+      } else {
+        engine = suppliedSslContext.createSSLEngine(socketAddress.host(), socketAddress.port());
+      }
+
+      // TODO We're missing the call SslContext.newEngine() does to SslContext.configureAndWrapEngine()
+
+      configureEngine(engine, serverName);
+      return engine;
+
     }
-    configureEngine(engine, serverName);
-    return engine;
   }
 
   public SSLEngine createEngine(VertxInternal vertx, String host, int port, boolean forceSNI) {
